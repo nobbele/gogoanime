@@ -1,6 +1,5 @@
 use reqwest::{self, Url};
 use scraper::{Html, Selector};
-use std::ops::Range;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -119,27 +118,40 @@ pub async fn get_episodes(
 
     let fragment = {
         let resp = client
-        .get(base_url.join(&format!("/category/{}", series_id))?)
-        .send()
-        .await?;
+            .get(base_url.join(&format!("/category/{}", series_id))?)
+            .send()
+            .await?;
 
         let body = resp.text().await?;
         Html::parse_document(&body)
     };
 
-    let elem = fragment.select(&Selector::parse("#episode_page a.active").unwrap()).next().unwrap().value();
+    let elem = fragment
+        .select(&Selector::parse("#episode_page a.active").unwrap())
+        .next()
+        .unwrap()
+        .value();
 
     let ep_start = elem.attr("ep_start").unwrap();
     let ep_end = elem.attr("ep_end").unwrap();
 
     let selector = Selector::parse("input#movie_id").unwrap();
-    let id = fragment.select(&selector).next().unwrap().value().attr("value").unwrap();
+    let id = fragment
+        .select(&selector)
+        .next()
+        .unwrap()
+        .value()
+        .attr("value")
+        .unwrap();
 
     let list_fragment = {
         let resp = client
-        .get(&format!("https://ajax.apimovie.xyz/ajax/load-list-episode?ep_start={}&ep_end={}&id={}", ep_start, ep_end, id))
-        .send()
-        .await?;
+            .get(&format!(
+                "https://ajax.apimovie.xyz/ajax/load-list-episode?ep_start={}&ep_end={}&id={}",
+                ep_start, ep_end, id
+            ))
+            .send()
+            .await?;
 
         let body = resp.text().await?;
         Html::parse_document(&body)
