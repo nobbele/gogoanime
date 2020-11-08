@@ -1,42 +1,65 @@
 use reqwest::{self, Url};
 use scraper::{Html, Selector};
 use std::ops::Range;
+use thiserror::Error;
 
-pub async fn get_video(
-    client: &reqwest::Client,
-    category: &str,
-    ep_num: u32,
-) -> anyhow::Result<Vec<Url>> {
-    let base_url = Url::parse("https://gogoanime.so")?;
-    let video_iframe_url = base_url.join({
+#[derive(Error, Debug)]
+pub enum GetVideoError {
+    #[error("Video not found")]
+    NotFound(String),
+    #[error("Failed to send get request")]
+    SendGetRequest,
+    #[error("Failed to get the text from the request")]
+    RequestText,
+    #[error("Failed to create a url")]
+    CreateUrl,
+    #[error("Failed to parse the json")]
+    ParseJson,
+}
+
+pub async fn get_video(client: &reqwest::Client, episode: &str) -> Result<Vec<Url>, GetVideoError> {
+    let base_url = Url::parse("https://gogoanime.so").map_err(|_| GetVideoError::CreateUrl)?;
+    let video_iframe_suffix: Result<String, GetVideoError> = {
         let resp = client
-            .get(base_url.join(&format!("{}-episode-{}", category, ep_num))?)
+            .get(
+                base_url
+                    .join(episode)
+                    .map_err(|_| GetVideoError::CreateUrl)?,
+            )
             .send()
-            .await?;
+            .await
+            .map_err(|_| GetVideoError::SendGetRequest)?;
 
-        let body = resp.text().await?;
+        let url = resp.url().to_string();
+
+        let body = resp.text().await.map_err(|_| GetVideoError::RequestText)?;
         let fragment = Html::parse_document(&body);
 
         let selector = Selector::parse(".play-video > iframe").unwrap();
 
-        &fragment
-            .select(&selector)
-            .next()
-            .unwrap()
-            .value()
-            .attr("src")
-            .unwrap()
-            .to_owned()
-    })?;
+        let iframe = match (&mut fragment.select(&selector)).next() {
+            Some(o) => o,
+            None => return Err(GetVideoError::NotFound(url)),
+        };
+
+        Ok(iframe.value().attr("src").unwrap().to_owned())
+    };
+    let video_iframe_url = base_url
+        .join(&video_iframe_suffix?)
+        .map_err(|_| GetVideoError::CreateUrl)?;
 
     // the clone and set_path just replaces the path, keeps the query data
     let mut video_request_url = video_iframe_url.clone();
     video_request_url.set_path("/ajax.php");
 
-    let resp = client.get(video_request_url).send().await?;
+    let resp = client
+        .get(video_request_url)
+        .send()
+        .await
+        .map_err(|_| GetVideoError::SendGetRequest)?;
 
-    let content = resp.text().await?;
-    let data = json::parse(&content)?;
+    let content = resp.text().await.map_err(|_| GetVideoError::RequestText)?;
+    let data = json::parse(&content).map_err(|_| GetVideoError::ParseJson)?;
 
     Ok(match &data["source"] {
         json::JsonValue::Array(sources) => {
@@ -47,7 +70,8 @@ pub async fn get_video(
             futures::executor::block_on(futures::future::join_all(futures))
                 .into_iter()
                 .map(|o| o.map(|o| o.url().to_owned()))
-                .collect::<Result<Vec<_>, _>>()?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| GetVideoError::SendGetRequest)?
         }
         _ => Vec::new(),
     })
@@ -87,25 +111,45 @@ pub async fn search(
         .collect::<Vec<_>>())
 }
 
-pub async fn get_episodes_range(
+pub async fn get_episodes(
     client: &reqwest::Client,
     series_id: &str,
-) -> anyhow::Result<Range<u32>> {
+) -> anyhow::Result<Vec<String>> {
     let base_url = Url::parse("https://gogoanime.so")?;
 
-    let resp = client
+    let fragment = {
+        let resp = client
         .get(base_url.join(&format!("/category/{}", series_id))?)
         .send()
         .await?;
 
-    let body = resp.text().await?;
-    let fragment = Html::parse_document(&body);
+        let body = resp.text().await?;
+        Html::parse_document(&body)
+    };
 
-    let selector = Selector::parse("#episode_page a.active").unwrap();
+    let elem = fragment.select(&Selector::parse("#episode_page a.active").unwrap()).next().unwrap().value();
 
-    let elem = fragment.select(&selector).next().unwrap().value();
+    let ep_start = elem.attr("ep_start").unwrap();
+    let ep_end = elem.attr("ep_end").unwrap();
 
-    // ep_start starts at 0 for some reason so add 1 and range upper is exclusive so add 1 there too
-    Ok(elem.attr("ep_start").unwrap().parse::<u32>()? + 1
-        ..elem.attr("ep_end").unwrap().parse::<u32>()? + 1)
+    let selector = Selector::parse("input#movie_id").unwrap();
+    let id = fragment.select(&selector).next().unwrap().value().attr("value").unwrap();
+
+    let list_fragment = {
+        let resp = client
+        .get(&format!("https://ajax.apimovie.xyz/ajax/load-list-episode?ep_start={}&ep_end={}&id={}", ep_start, ep_end, id))
+        .send()
+        .await?;
+
+        let body = resp.text().await?;
+        Html::parse_document(&body)
+    };
+
+    let selector = Selector::parse("#episode_related > li > a").unwrap();
+
+    Ok(list_fragment
+        .select(&selector)
+        .map(|e| e.value().attr("href").unwrap_or(""))
+        .map(|s| s.to_owned())
+        .collect::<Vec<_>>())
 }
