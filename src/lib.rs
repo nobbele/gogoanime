@@ -81,18 +81,33 @@ pub struct SearchResultEntry {
     pub name: String,
 }
 
+#[derive(Error, Debug)]
+pub enum SearchError {
+    #[error("Failed to send get request")]
+    SendGetRequest,
+    #[error("Failed to get the text from the request")]
+    RequestText,
+    #[error("Failed to create a url")]
+    CreateUrl,
+}
+
 pub async fn search(
     client: &reqwest::Client,
     query: &str,
-) -> anyhow::Result<Vec<SearchResultEntry>> {
-    let base_url = Url::parse("https://gogoanime.so")?;
+) -> Result<Vec<SearchResultEntry>, SearchError> {
+    let base_url = Url::parse("https://gogoanime.so").map_err(|_| SearchError::CreateUrl)?;
 
     let resp = client
-        .get(base_url.join(&format!("/search.html&keyword={}", query))?)
+        .get(
+            base_url
+                .join(&format!("/search.html&keyword={}", query))
+                .map_err(|_| SearchError::CreateUrl)?,
+        )
         .send()
-        .await?;
+        .await
+        .map_err(|_| SearchError::SendGetRequest)?;
 
-    let body = resp.text().await?;
+    let body = resp.text().await.map_err(|_| SearchError::RequestText)?;
     let fragment = Html::parse_document(&body);
 
     let selector = Selector::parse(".last_episodes > ul > li .img a").unwrap();
@@ -110,19 +125,37 @@ pub async fn search(
         .collect::<Vec<_>>())
 }
 
+#[derive(Error, Debug)]
+pub enum GetEpisodesError {
+    #[error("Failed to send get request")]
+    SendGetRequest,
+    #[error("Failed to get the text from the request")]
+    RequestText,
+    #[error("Failed to create a url")]
+    CreateUrl,
+}
+
 pub async fn get_episodes(
     client: &reqwest::Client,
     series_id: &str,
-) -> anyhow::Result<Vec<String>> {
-    let base_url = Url::parse("https://gogoanime.so")?;
+) -> Result<Vec<String>, GetEpisodesError> {
+    let base_url = Url::parse("https://gogoanime.so").map_err(|_| GetEpisodesError::CreateUrl)?;
 
     let fragment = {
         let resp = client
-            .get(base_url.join(&format!("/category/{}", series_id))?)
+            .get(
+                base_url
+                    .join(&format!("/category/{}", series_id))
+                    .map_err(|_| GetEpisodesError::CreateUrl)?,
+            )
             .send()
-            .await?;
+            .await
+            .map_err(|_| GetEpisodesError::SendGetRequest)?;
 
-        let body = resp.text().await?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|_| GetEpisodesError::RequestText)?;
         Html::parse_document(&body)
     };
 
@@ -151,9 +184,13 @@ pub async fn get_episodes(
                 ep_start, ep_end, id
             ))
             .send()
-            .await?;
+            .await
+            .map_err(|_| GetEpisodesError::SendGetRequest)?;
 
-        let body = resp.text().await?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|_| GetEpisodesError::RequestText)?;
         Html::parse_document(&body)
     };
 
