@@ -141,48 +141,52 @@ pub async fn get_episodes(
 ) -> Result<Vec<String>, GetEpisodesError> {
     let base_url = Url::parse("https://gogoanime.so").map_err(|_| GetEpisodesError::CreateUrl)?;
 
-    let fragment = {
-        let resp = client
-            .get(
-                base_url
-                    .join(&format!("/category/{}", series_id))
-                    .map_err(|_| GetEpisodesError::CreateUrl)?,
-            )
-            .send()
-            .await
-            .map_err(|_| GetEpisodesError::SendGetRequest)?;
+    let api_url = {
+        let fragment = {
+            let resp = client
+                .get(
+                    base_url
+                        .join(&format!("/category/{}", series_id))
+                        .map_err(|_| GetEpisodesError::CreateUrl)?,
+                )
+                .send()
+                .await
+                .map_err(|_| GetEpisodesError::SendGetRequest)?;
 
-        let body = resp
-            .text()
-            .await
-            .map_err(|_| GetEpisodesError::RequestText)?;
-        Html::parse_document(&body)
+            let body = resp
+                .text()
+                .await
+                .map_err(|_| GetEpisodesError::RequestText)?;
+            Html::parse_document(&body)
+        };
+
+        let elem = fragment
+            .select(&Selector::parse("#episode_page a.active").unwrap())
+            .next()
+            .unwrap()
+            .value();
+
+        let ep_start = elem.attr("ep_start").unwrap();
+        let ep_end = elem.attr("ep_end").unwrap();
+
+        let selector = Selector::parse("input#movie_id").unwrap();
+        let id = fragment
+            .select(&selector)
+            .next()
+            .unwrap()
+            .value()
+            .attr("value")
+            .unwrap();
+
+        format!(
+            "https://ajax.apimovie.xyz/ajax/load-list-episode?ep_start={}&ep_end={}&id={}",
+            ep_start, ep_end, id
+        )
     };
-
-    let elem = fragment
-        .select(&Selector::parse("#episode_page a.active").unwrap())
-        .next()
-        .unwrap()
-        .value();
-
-    let ep_start = elem.attr("ep_start").unwrap();
-    let ep_end = elem.attr("ep_end").unwrap();
-
-    let selector = Selector::parse("input#movie_id").unwrap();
-    let id = fragment
-        .select(&selector)
-        .next()
-        .unwrap()
-        .value()
-        .attr("value")
-        .unwrap();
 
     let list_fragment = {
         let resp = client
-            .get(&format!(
-                "https://ajax.apimovie.xyz/ajax/load-list-episode?ep_start={}&ep_end={}&id={}",
-                ep_start, ep_end, id
-            ))
+            .get(&api_url)
             .send()
             .await
             .map_err(|_| GetEpisodesError::SendGetRequest)?;
